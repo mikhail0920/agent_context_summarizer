@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agent-context-summarizer"
+version = "0.1.0"
+description = "Cheap extractive context compression tuned for LLM agent memory."
+requires-python = ">=3.10"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Mikhail Ilchenko" }]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0.0"]
+
+[tool.setuptools.packages.find]
+include = ["agent_summarizer*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

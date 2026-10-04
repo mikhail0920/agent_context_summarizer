@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Benchmark downloads and generated artifacts
+benchmarks/.cache/
+benchmarks/output/
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
