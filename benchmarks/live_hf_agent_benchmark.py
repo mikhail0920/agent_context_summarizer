@@ -6,10 +6,9 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.error import HTTPError
 from urllib.parse import quote
-
-import requests
-from huggingface_hub import hf_hub_download
+from urllib.request import urlopen
 
 if __package__ is None or __package__ == "":
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -19,6 +18,16 @@ from agent_summarizer.evaluation import BenchmarkScenario, OracleFact, evaluate_
 
 DATASETS_SERVER = "https://datasets-server.huggingface.co/rows"
 CACHE_DIR = Path(__file__).resolve().parent / ".cache" / "hf_rows"
+LIVE_MAX_SENTENCES = 8
+LIVE_OUTPUT_CHAR_BUDGET = 800
+
+BENCHMARK_QUERIES = {
+    "swe_bench": "Summarize the primary software issue, repository context, failing tests, and implementation-relevant details.",
+    "toolbench_conversation": "Summarize the primary user request and the tool calls and parameters made in the conversation.",
+    "toolbench_instruction": "Summarize the primary user request and the APIs relevant to completing it.",
+    "tau_airline": "Summarize the primary customer-service conversation, retaining user intent, identifiers, and tool activity.",
+    "tau_retail": "Summarize the primary retail-support conversation, retaining user intent and operational details.",
+}
 
 
 def fetch_live_scenarios() -> list[BenchmarkScenario]:
@@ -43,7 +52,7 @@ def run() -> str:
             include_agent_state=False,
             protected_budget_ratio=0.0,
             centrality_weight=1.0,
-            query_weight=0.08,
+            query_weight=0.0,
             rarity_weight=0.0,
             anchor_weight=0.0,
             recency_weight=0.0,
@@ -82,7 +91,6 @@ def _swe_bench_scenario(offset: int) -> BenchmarkScenario:
             *[f"- {test}" for test in pass_to_pass[:6]],
             "test_patch excerpt:",
             _normalize(row.get("test_patch", ""))[:2500],
-            "other real SWE-bench rows as long-context noise:",
             *_swe_noise_rows(exclude_offset=offset),
         ]
     )
@@ -96,22 +104,15 @@ def _swe_bench_scenario(offset: int) -> BenchmarkScenario:
     if identifier:
         oracle.append(OracleFact("problem_identifier", identifier))
 
-    query_parts = [
-        f"compress SWE-bench issue {row['instance_id']}",
-        f"repo {row['repo']}",
-        "keep failing tests and issue identifiers",
-    ]
-    if fail_to_pass:
-        query_parts.append(fail_to_pass[0])
-
     return BenchmarkScenario(
         name=f"live SWE-bench Lite row {offset}: {row['instance_id']}",
         source="https://huggingface.co/datasets/SWE-bench/SWE-bench_Lite",
-        query=" ".join(query_parts),
+        query=BENCHMARK_QUERIES["swe_bench"],
         context=context,
         oracle_facts=tuple(oracle),
-        max_sentences=1,
+        max_sentences=LIVE_MAX_SENTENCES,
         max_compression_ratio=0.24,
+        max_output_chars=LIVE_OUTPUT_CHAR_BUDGET,
     )
 
 
@@ -123,7 +124,6 @@ def _toolbench_conversation_scenario(offset: int) -> BenchmarkScenario:
             "Dataset: tuandunghcmut/toolbench-v1 default validation",
             f"id: {row['id']}",
             *_format_messages(messages),
-            "other real ToolBench conversations as long-context noise:",
             *_toolbench_conversation_noise(exclude_offset=offset),
         ]
     )
@@ -138,11 +138,12 @@ def _toolbench_conversation_scenario(offset: int) -> BenchmarkScenario:
     return BenchmarkScenario(
         name=f"live ToolBench conversation row {offset}",
         source="https://huggingface.co/datasets/tuandunghcmut/toolbench-v1",
-        query=f"compress ToolBench conversation preserving task, API calls, and parameters: {row['id']} {first_user[:160]}",
+        query=BENCHMARK_QUERIES["toolbench_conversation"],
         context=context,
         oracle_facts=tuple(oracle),
-        max_sentences=1,
+        max_sentences=LIVE_MAX_SENTENCES,
         max_compression_ratio=0.22,
+        max_output_chars=LIVE_OUTPUT_CHAR_BUDGET,
     )
 
 
@@ -161,7 +162,6 @@ def _toolbench_instruction_scenario(offset: int) -> BenchmarkScenario:
                 for api in api_list
             ],
             f"relevant_apis: {relevant}",
-            "other real ToolBench instructions as long-context noise:",
             *_toolbench_instruction_noise(exclude_offset=offset),
         ]
     )
@@ -181,11 +181,12 @@ def _toolbench_instruction_scenario(offset: int) -> BenchmarkScenario:
     return BenchmarkScenario(
         name=f"live ToolBench instruction row {offset}: {row['query_id']}",
         source="https://huggingface.co/datasets/tuandunghcmut/toolbench-v1",
-        query=f"compress ToolBench instruction {row['query_id']} preserving query and relevant APIs: {row['query']} {relevant}",
+        query=BENCHMARK_QUERIES["toolbench_instruction"],
         context=context,
         oracle_facts=tuple(oracle),
-        max_sentences=1,
+        max_sentences=LIVE_MAX_SENTENCES,
         max_compression_ratio=0.20,
+        max_output_chars=LIVE_OUTPUT_CHAR_BUDGET,
     )
 
 
@@ -196,7 +197,6 @@ def _tau_airline_trace_scenario(offset: int) -> BenchmarkScenario:
         [
             "Dataset: jkazdan/taubench_traces_training_data",
             *_format_messages(messages),
-            "other real tau-bench airline traces as long-context noise:",
             *_tau_airline_noise(exclude_offset=offset),
         ]
     )
@@ -214,11 +214,12 @@ def _tau_airline_trace_scenario(offset: int) -> BenchmarkScenario:
     return BenchmarkScenario(
         name=f"live tau-bench airline trace row {offset}",
         source="https://huggingface.co/datasets/jkazdan/taubench_traces_training_data",
-        query=f"compress tau-bench airline trace preserving user goal, ids, and tool calls: {first_user} {ids[:3]} {tool_names[:3]}",
+        query=BENCHMARK_QUERIES["tau_airline"],
         context=context,
         oracle_facts=tuple(oracle[:7]),
-        max_sentences=1,
+        max_sentences=LIVE_MAX_SENTENCES,
         max_compression_ratio=0.20,
+        max_output_chars=LIVE_OUTPUT_CHAR_BUDGET,
     )
 
 
@@ -230,7 +231,6 @@ def _tau_retail_trace_scenario(offset: int) -> BenchmarkScenario:
             "Dataset: amityco/tau-bench-retail-train-next-action",
             *_format_messages(messages),
             f"expected_next_action: {row.get('answer')}",
-            "other real tau-bench retail traces as long-context noise:",
             *_tau_retail_noise(exclude_offset=offset),
         ]
     )
@@ -250,11 +250,12 @@ def _tau_retail_trace_scenario(offset: int) -> BenchmarkScenario:
     return BenchmarkScenario(
         name=f"live tau-bench retail next-action row {offset}",
         source="https://huggingface.co/datasets/amityco/tau-bench-retail-train-next-action",
-        query=f"compress tau-bench retail trace preserving next action, order ids, item ids, user ids, and tool calls: {first_user} {answer_ids[:4]} {(answer_tools or tool_names)[:3]}",
+        query=BENCHMARK_QUERIES["tau_retail"],
         context=context,
         oracle_facts=tuple(oracle[:8]),
-        max_sentences=1,
+        max_sentences=LIVE_MAX_SENTENCES,
         max_compression_ratio=0.20,
+        max_output_chars=LIVE_OUTPUT_CHAR_BUDGET,
     )
 
 
@@ -269,20 +270,22 @@ def _fetch_row(dataset: str, config: str, split: str, offset: int) -> dict[str, 
         f"&config={quote(config)}&split={quote(split)}&offset={offset}&length=1"
     )
     try:
-        response = None
+        payload = None
         for attempt in range(4):
-            response = requests.get(url, timeout=30)
-            if response.status_code != 429:
+            try:
+                with urlopen(url, timeout=30) as response:
+                    payload = json.load(response)
                 break
-            time.sleep(2 ** attempt)
-        assert response is not None
-        response.raise_for_status()
-        payload = response.json()
+            except HTTPError as error:
+                if error.code != 429 or attempt == 3:
+                    raise
+                time.sleep(2 ** attempt)
+        assert payload is not None
         rows = payload.get("rows", [])
         if not rows:
             raise RuntimeError(f"No rows returned for {dataset}/{config}/{split} offset={offset}")
         row = rows[0]["row"]
-    except requests.HTTPError:
+    except HTTPError:
         row = _fetch_row_from_parquet(dataset, config, split, offset)
     cache_file.write_text(json.dumps(row, ensure_ascii=False, indent=2), encoding="utf-8")
     return row
@@ -295,6 +298,7 @@ def _cache_name(dataset: str, config: str, split: str, offset: int) -> str:
 
 def _fetch_row_from_parquet(dataset: str, config: str, split: str, offset: int) -> dict[str, Any]:
     import pandas as pd
+    from huggingface_hub import hf_hub_download
 
     path = _parquet_path(dataset, config, split)
     local_path = hf_hub_download(repo_id=dataset, repo_type="dataset", filename=path)
@@ -339,7 +343,7 @@ def _swe_noise_rows(exclude_offset: int) -> list[str]:
             continue
         row = _fetch_row("SWE-bench/SWE-bench_Lite", "default", "test", offset)
         lines.append(
-            "noise SWE row: "
+            "Related SWE-bench record: "
             f"instance_id={row['instance_id']} repo={row['repo']} "
             f"problem_statement={_normalize(row['problem_statement'])[:1000]} "
             f"FAIL_TO_PASS={_parse_jsonish_list(row.get('FAIL_TO_PASS', []))[:2]}"
@@ -356,7 +360,7 @@ def _toolbench_conversation_noise(exclude_offset: int) -> list[str]:
         messages = _conversation_messages(row["conversations"])
         first_user = next((message.get("content", "") for message in messages if message.get("role") == "user"), "")
         lines.append(
-            "noise ToolBench conversation: "
+            "Related ToolBench conversation: "
             f"id={row['id'][:160]} first_user={_normalize(first_user)[:500]} "
             f"tools={_tool_call_names(messages)[:4]}"
         )
@@ -370,7 +374,7 @@ def _toolbench_instruction_noise(exclude_offset: int) -> list[str]:
             continue
         row = _fetch_row("tuandunghcmut/toolbench-v1", "benchmark", "g2_instruction", offset)
         lines.append(
-            "noise ToolBench instruction: "
+            "Related ToolBench instruction: "
             f"query_id={row['query_id']} query={_normalize(row['query'])[:700]} relevant_apis={row['relevant_apis']}"
         )
     return lines
@@ -385,7 +389,7 @@ def _tau_airline_noise(exclude_offset: int) -> list[str]:
         messages = row["messages"]
         first_user = next((message.get("content", "") for message in messages if message.get("role") == "user"), "")
         lines.append(
-            "noise tau airline trace: "
+            "Related airline-support trace: "
             f"first_user={_normalize(first_user)[:500]} ids={_extract_ids(json.dumps(messages))[:5]} "
             f"tools={_tool_call_names(messages)[:4]}"
         )
@@ -401,7 +405,7 @@ def _tau_retail_noise(exclude_offset: int) -> list[str]:
         messages = row["conversations"]
         first_user = next((message.get("content", "") for message in messages if message.get("role") == "user"), "")
         lines.append(
-            "noise tau retail trace: "
+            "Related retail-support trace: "
             f"first_user={_normalize(first_user)[:500]} ids={_extract_ids(json.dumps(messages))[:5]} "
             f"tools={_tool_call_names(messages)[:4]} answer={row.get('answer')}"
         )

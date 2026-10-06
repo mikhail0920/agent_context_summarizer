@@ -62,6 +62,33 @@ def test_empty_input_returns_empty_result():
     assert result.compression_ratio == 0.0
 
 
+def test_explicit_max_sentences_is_a_hard_upper_bound():
+    text = "\n".join(
+        f"User task item {index}: preserve operation_{index} and constraint_{index}."
+        for index in range(12)
+    )
+    summarizer = AgentContextSummarizer(SummarizerConfig(max_sentences=10, min_sentences=8))
+
+    result = summarizer.summarize(
+        text,
+        query="preserve operation constraint user task",
+        max_sentences=2,
+        min_sentences=9,
+    )
+
+    assert len(result.sentences) <= 2
+
+
+def test_zero_max_sentences_selects_no_sentences():
+    result = AgentContextSummarizer(SummarizerConfig(include_agent_state=False)).summarize(
+        "First useful sentence. Second useful sentence.",
+        max_sentences=0,
+    )
+
+    assert result.sentences == ()
+    assert result.text == ""
+
+
 def test_extracts_structured_agent_state_from_tool_trace():
     text = """
     Dataset: tau-style trace
@@ -69,17 +96,24 @@ def test_extracts_structured_agent_state_from_tool_trace():
     assistant tool_call: get_order_details({"order_id":"#W6067464"})
     tool[get_order_details]: {"items": [{"item_id": "8917609800"}]}
     expected_next_action: [{'role': 'assistant', 'tool_calls': [{'function': {'name': 'return_delivered_order_items', 'arguments': '{"order_id":"#W6067464","item_ids":["8917609800"]}'}}]}]
-    other real tau-bench retail traces as long-context noise:
-    noise tau retail trace: first_user=I need a different order ids=['#W0000000'] tools=['wrong_tool']
     """
 
-    units = extract_agent_state(text, "return #W6067464 8917609800 return_delivered_order_items", max_units=10)
+    units = extract_agent_state(text, "query-only id #W0000000 and wrong_tool", max_units=10)
     rendered = "\n".join(unit.text for unit in units)
 
     assert "#W6067464" in rendered
     assert "8917609800" in rendered
     assert "return_delivered_order_items" in rendered
     assert "#W0000000" not in rendered
+
+
+def test_agent_state_does_not_truncate_at_former_benchmark_marker():
+    former_marker = "other real " + "SWE-bench rows as long-context noise:"
+    text = f"Dataset: example\n{former_marker}\ninstance_id: astropy__astropy-12907"
+
+    rendered = "\n".join(unit.text for unit in extract_agent_state(text, max_units=10))
+
+    assert "astropy__astropy-12907" in rendered
 
 
 def _long_agent_context() -> str:

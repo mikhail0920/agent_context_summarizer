@@ -34,9 +34,10 @@ def run() -> str:
         SummarizerConfig(
             max_sentences=12,
             min_sentences=5,
+            include_agent_state=False,
             protected_budget_ratio=0.0,
             centrality_weight=1.0,
-            query_weight=0.08,
+            query_weight=0.0,
             rarity_weight=0.0,
             anchor_weight=0.0,
             recency_weight=0.0,
@@ -75,10 +76,11 @@ def _swe_bench_issue_context() -> BenchmarkScenario:
     return BenchmarkScenario(
         name="swe-bench nested CompoundModel issue",
         source=SOURCES["swe_bench"],
-        query="fix real SWE-bench astropy separability issue and keep tests/constraints",
+        query="Summarize the primary coding issue, constraints, failing tests, and implementation context.",
         context=context,
         max_sentences=10,
         max_compression_ratio=0.28,
+        max_output_chars=1200,
         oracle_facts=(
             OracleFact("issue", "separability_matrix does not compute separability correctly"),
             OracleFact("constraint", "do not inspect the gold solution patch"),
@@ -110,10 +112,11 @@ def _swe_agent_trajectory_context() -> BenchmarkScenario:
     return BenchmarkScenario(
         name="swe-agent trajectory with patch decision",
         source=SOURCES["swe_agent"],
-        query="compress coding trajectory while keeping file, failing test, patch decision, and submit constraint",
+        query="Summarize the primary coding trajectory, retaining failures, decisions, constraints, and verification.",
         context=context,
         max_sentences=9,
         max_compression_ratio=0.30,
+        max_output_chars=1200,
         oracle_facts=(
             OracleFact("open_file", "src/marshmallow/fields.py"),
             OracleFact("failure", "test_timedelta_rounding failed"),
@@ -145,10 +148,11 @@ def _tau_airline_policy_context() -> BenchmarkScenario:
     return BenchmarkScenario(
         name="tau-bench airline long-horizon policy memory",
         source=SOURCES["tau_bench"],
-        query="compress airline rebooking context with policy constraints and target database state",
+        query="Summarize the primary customer-service trajectory, retaining policies, preferences, decisions, and final state.",
         context=context,
         max_sentences=10,
         max_compression_ratio=0.30,
+        max_output_chars=1200,
         oracle_facts=(
             OracleFact("reservation", "HZ4921"),
             OracleFact("policy", "destination changes are allowed only before check-in"),
@@ -181,10 +185,11 @@ def _toolbench_orchestration_context() -> BenchmarkScenario:
     return BenchmarkScenario(
         name="toolbench multi-tool sequence and schema",
         source=SOURCES["toolbench"],
-        query="compress tool orchestration context and preserve exact tool sequence and parameters",
+        query="Summarize the primary tool-use trajectory, retaining the user goal, call sequence, parameters, and constraints.",
         context=context,
         max_sentences=9,
         max_compression_ratio=0.28,
+        max_output_chars=1200,
         oracle_facts=(
             OracleFact("query", "Find restaurants near Central Park"),
             OracleFact("step_1", "search_restaurants(location=\"Central Park, New York\", type=\"restaurant\", open_now=true)"),

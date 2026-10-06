@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable, Sequence
 
 from .features import cosine_counts, detect_labels, normalize, structure_score, token_counter
-from .models import SentenceCandidate, SummaryResult, SummarizerConfig
+from .models import MemoryUnit, SentenceCandidate, SummaryResult, SummarizerConfig
 from .splitting import split_sentences
 from .state import extract_agent_state, render_agent_state
 
@@ -24,10 +24,12 @@ class AgentContextSummarizer:
         query: str = "",
         max_sentences: int | None = None,
         min_sentences: int | None = None,
+        max_output_chars: int | None = None,
     ) -> SummaryResult:
+        output_char_budget = max_output_chars if max_output_chars is not None else self.config.max_output_chars
         sentences = split_sentences(text)
         if not sentences:
-            return SummaryResult("", (), (), 0.0)
+            return SummaryResult("", (), (), 0.0, output_char_budget=output_char_budget)
 
         memory_units = (
             extract_agent_state(text, query, self.config.max_memory_units)
@@ -78,24 +80,33 @@ class AgentContextSummarizer:
 
         selected = self._select(candidates, limit)
         selected = tuple(sorted(selected, key=lambda item: item.index if self.config.preserve_order else -item.final_score))
-        summary_parts = [
-            part
-            for part in (
-                render_agent_state(memory_units),
-                _join_sentences([candidate.text for candidate in selected]),
-            )
-            if part
-        ]
-        summary = "\n\n".join(summary_parts)
+        summary, selected, memory_units = _fit_output_budget(
+            memory_units,
+            selected,
+            output_char_budget,
+            self.config.preserve_order,
+        )
         compression_ratio = len(summary) / len(text) if text else 0.0
-        return SummaryResult(summary, selected, tuple(candidates), compression_ratio, memory_units)
+        return SummaryResult(
+            summary,
+            selected,
+            tuple(candidates),
+            compression_ratio,
+            memory_units,
+            output_char_budget,
+        )
 
     def _resolve_limit(self, sentence_count: int, max_sentences: int | None, min_sentences: int | None) -> int:
         max_limit = max_sentences if max_sentences is not None else self.config.max_sentences
-        min_limit = min_sentences if min_sentences is not None else self.config.min_sentences
-        return max(1, min(sentence_count, max(min_limit, max_limit)))
+        # min_sentences is a preference only. The maximum is always a hard
+        # upper bound, including when callers explicitly pass a value below it.
+        _ = min_sentences if min_sentences is not None else self.config.min_sentences
+        return min(sentence_count, max(0, max_limit))
 
     def _select(self, candidates: list[SentenceCandidate], limit: int) -> list[SentenceCandidate]:
+        if limit <= 0:
+            return []
+
         protected_limit = min(limit, max(0, int(limit * self.config.protected_budget_ratio)))
         protected = sorted(
             (candidate for candidate in candidates if candidate.protected),
@@ -108,24 +119,28 @@ class AgentContextSummarizer:
             (candidate for candidate in candidates if candidate.query_score >= 0.82),
             key=lambda item: (item.query_score, item.anchor_score, item.final_score),
             reverse=True,
-        )[:4]
+        )[:min(4, limit)]
         for candidate in query_matches:
+            if len(selected_by_index) >= limit:
+                break
             selected_by_index[candidate.index] = candidate
 
         priority_labels = ("task", "test", "constraint", "policy", "error", "decision", "user_preference", "security", "todo")
         if protected_limit:
             for label in priority_labels:
+                if len(selected_by_index) >= limit:
+                    break
                 matches = [candidate for candidate in protected if label in candidate.labels]
                 if label == "constraint":
                     matches = [candidate for candidate in matches if "security" not in candidate.labels] or matches
                 if matches:
                     best = max(matches, key=lambda item: (item.query_score, item.anchor_score, item.final_score))
                     selected_by_index[best.index] = best
-                if len(selected_by_index) >= protected_limit:
+                if len(selected_by_index) >= protected_limit or len(selected_by_index) >= limit:
                     break
 
             for candidate in protected:
-                if len(selected_by_index) >= protected_limit:
+                if len(selected_by_index) >= protected_limit or len(selected_by_index) >= limit:
                     break
                 selected_by_index.setdefault(candidate.index, candidate)
 
@@ -140,7 +155,7 @@ class AgentContextSummarizer:
                 if remaining_slots == 0:
                     break
 
-        return list(selected_by_index.values())
+        return list(selected_by_index.values())[:limit]
 
     def _similarity_matrix(self, sentences: list[str]) -> list[list[float]]:
         if self.embedder:
@@ -261,6 +276,69 @@ def _join_sentences(sentences: list[str]) -> str:
             continue
         result.append(sentence)
     return "\n".join(result)
+
+
+def _fit_output_budget(
+    memory_units: tuple[MemoryUnit, ...],
+    selected: tuple[SentenceCandidate, ...],
+    max_chars: int | None,
+    preserve_order: bool,
+) -> tuple[str, tuple[SentenceCandidate, ...], tuple[MemoryUnit, ...]]:
+    """Render state and sentences inside one shared character budget.
+
+    Structured state is part of the same budget as extractive sentences. When
+    the complete result is too large, low-priority state units and low-scoring
+    sentences are removed until the result fits. A single oversized component
+    is clipped as a final safeguard so the bound is unconditional.
+    """
+
+    kept_units = list(memory_units)
+    kept_sentences = list(selected)
+    if max_chars is not None and max_chars <= 0:
+        return "", (), ()
+
+    def ordered_sentences() -> tuple[SentenceCandidate, ...]:
+        key = (lambda item: item.index) if preserve_order else (lambda item: -item.final_score)
+        return tuple(sorted(kept_sentences, key=key))
+
+    def render() -> str:
+        parts = [
+            part
+            for part in (
+                render_agent_state(tuple(kept_units)),
+                _join_sentences([candidate.text for candidate in ordered_sentences()]),
+            )
+            if part
+        ]
+        return "\n\n".join(parts)
+
+    summary = render()
+    if max_chars is None:
+        return summary, ordered_sentences(), tuple(kept_units)
+
+    while len(summary) > max_chars and len(kept_units) + len(kept_sentences) > 1:
+        state_length = len(render_agent_state(tuple(kept_units)))
+        sentence_length = len(_join_sentences([candidate.text for candidate in ordered_sentences()]))
+        if kept_units and (not kept_sentences or state_length >= sentence_length):
+            kept_units.pop()
+        elif kept_sentences:
+            lowest = min(kept_sentences, key=lambda item: item.final_score)
+            kept_sentences.remove(lowest)
+        summary = render()
+
+    if len(summary) > max_chars:
+        summary = _clip_to_budget(summary, max_chars)
+    return summary, ordered_sentences(), tuple(kept_units)
+
+
+def _clip_to_budget(text: str, max_chars: int) -> str:
+    if max_chars <= 0:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    if max_chars == 1:
+        return "…"
+    return text[: max_chars - 1].rstrip() + "…"
 
 
 def _is_redundant(candidate: SentenceCandidate, selected: Sequence[SentenceCandidate]) -> bool:

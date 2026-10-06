@@ -20,10 +20,8 @@ ID_PATTERNS: tuple[tuple[str, str], ...] = (
 
 def extract_agent_state(text: str, query: str = "", max_units: int = 24) -> tuple[MemoryUnit, ...]:
     units: list[MemoryUnit] = []
-    state_text = _target_segment(text)
-    lines = [line.strip() for line in state_text.splitlines() if line.strip()]
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
 
-    _extract_ids("", query, units)
     for line in lines:
         _extract_metadata_line(line, units)
         _extract_role_line(line, units)
@@ -32,8 +30,10 @@ def extract_agent_state(text: str, query: str = "", max_units: int = 24) -> tupl
         _extract_relevant_apis(line, units)
         _extract_tests(line, units)
 
-    _extract_ids(state_text, "", units)
-    _extract_query_anchors(state_text, query, units)
+    # The query may guide selection of excerpts, but it is never treated as a
+    # source of facts. Every emitted value must occur in the source context.
+    _extract_ids(text, units)
+    _extract_query_anchors(text, query, units)
 
     deduped = _dedupe(units)
     return tuple(deduped[:max_units])
@@ -124,10 +124,9 @@ def _extract_tests(line: str, units: list[MemoryUnit]) -> None:
             units.append(MemoryUnit("test", "failing_or_relevant", match))
 
 
-def _extract_ids(text: str, query: str, units: list[MemoryUnit]) -> None:
-    search_space = f"{query}\n{text}"
+def _extract_ids(text: str, units: list[MemoryUnit]) -> None:
     for key, pattern in ID_PATTERNS:
-        for match in re.findall(pattern, search_space):
+        for match in re.findall(pattern, text):
             units.append(MemoryUnit("entity" if key != "test" else "test", key, match))
 
 
@@ -192,19 +191,3 @@ def _unit_priority(unit: MemoryUnit) -> int:
     if unit.type == "task":
         return 8
     return 9
-
-
-def _target_segment(text: str) -> str:
-    markers = (
-        "other real SWE-bench rows as long-context noise:",
-        "other real ToolBench conversations as long-context noise:",
-        "other real ToolBench instructions as long-context noise:",
-        "other real tau-bench airline traces as long-context noise:",
-        "other real tau-bench retail traces as long-context noise:",
-    )
-    cut = len(text)
-    for marker in markers:
-        index = text.find(marker)
-        if index != -1:
-            cut = min(cut, index)
-    return text[:cut]

@@ -21,6 +21,7 @@ class SummarizerConfig:
     preserve_order: bool = True
     include_agent_state: bool = True
     max_memory_units: int = 24
+    max_output_chars: int | None = None
 
 
 @dataclass(frozen=True)
@@ -57,6 +58,7 @@ class SummaryResult:
     all_candidates: tuple[SentenceCandidate, ...]
     compression_ratio: float
     memory_units: tuple[MemoryUnit, ...] = field(default_factory=tuple)
+    output_char_budget: int | None = None
 
     @property
     def labels(self) -> tuple[str, ...]:

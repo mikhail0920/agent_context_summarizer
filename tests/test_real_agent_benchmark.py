@@ -34,9 +34,10 @@ def test_agent_profile_is_at_least_as_good_as_centrality_on_curated_fixtures():
             SummarizerConfig(
                 max_sentences=12,
                 min_sentences=5,
+                include_agent_state=False,
                 protected_budget_ratio=0.0,
                 centrality_weight=1.0,
-                query_weight=0.08,
+                query_weight=0.0,
                 rarity_weight=0.0,
                 anchor_weight=0.0,
                 recency_weight=0.0,

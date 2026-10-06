@@ -23,6 +23,7 @@ class BenchmarkScenario:
     oracle_facts: tuple[OracleFact, ...]
     max_sentences: int
     max_compression_ratio: float
+    max_output_chars: int | None = None
 
 
 @dataclass(frozen=True)
@@ -56,6 +57,10 @@ class BenchmarkReport:
     def average_compression_ratio(self) -> float:
         return mean(score.result.compression_ratio for score in self.scores) if self.scores else 0.0
 
+    @property
+    def average_output_chars(self) -> float:
+        return mean(len(score.result.text) for score in self.scores) if self.scores else 0.0
+
 
 def evaluate_scenarios(
     scenarios: list[BenchmarkScenario],
@@ -70,10 +75,16 @@ def evaluate_scenarios(
 
 
 def evaluate_scenario(scenario: BenchmarkScenario, summarizer: AgentContextSummarizer) -> ScenarioScore:
+    leaked_facts = oracle_facts_in_query(scenario)
+    if leaked_facts:
+        names = ", ".join(leaked_facts)
+        raise ValueError(f"Benchmark query contains oracle facts: {names}")
+
     result = summarizer.summarize(
         scenario.context,
         query=scenario.query,
         max_sentences=scenario.max_sentences,
+        max_output_chars=scenario.max_output_chars,
     )
     summary_lower = _normalize_for_match(result.text)
     total_weight = sum(fact.weight for fact in scenario.oracle_facts)
@@ -102,15 +113,19 @@ def format_report(report: BenchmarkReport) -> str:
         f"pass_rate={report.pass_rate:.2%}",
         f"average_fact_recall={report.average_fact_recall:.2%}",
         f"average_compression_ratio={report.average_compression_ratio:.2%}",
+        f"average_output_chars={report.average_output_chars:.2f}",
         "",
     ]
     for score in report.scores:
+        budget = score.result.output_char_budget
+        budget_text = str(budget) if budget is not None else "-"
         lines.extend(
             [
                 f"- {score.scenario.name}",
                 f"  source: {score.scenario.source}",
                 f"  fact_recall={score.fact_recall:.2%}",
                 f"  compression_ratio={score.result.compression_ratio:.2%}",
+                f"  output_chars={len(score.result.text)}/{budget_text}",
                 f"  passed={score.passed}",
                 f"  missing={', '.join(score.missing_facts) if score.missing_facts else '-'}",
             ]
@@ -120,3 +135,16 @@ def format_report(report: BenchmarkReport) -> str:
 
 def _normalize_for_match(text: str) -> str:
     return " ".join(text.lower().split())
+
+
+def oracle_facts_in_query(scenario: BenchmarkScenario) -> tuple[str, ...]:
+    """Return oracle fact names copied verbatim into the benchmark query."""
+
+    query = _normalize_for_match(scenario.query)
+    if not query:
+        return ()
+    return tuple(
+        fact.name
+        for fact in scenario.oracle_facts
+        if (value := _normalize_for_match(fact.must_contain)) and value in query
+    )
